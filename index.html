@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>VideoSync</title>
+<meta charset="UTF-8">
+<style>
+body { font-family: Arial; max-width: 800px; margin: 0 auto; padding: 20px; }
+.hidden { display: none; }
+input, button { width: 100%; padding: 10px; margin: 5px 0; }
+button { background: #4CAF50; color: white; border: none; cursor: pointer; }
+#roomInfo { background: #e8f5e9; padding: 10px; margin: 10px 0; }
+#videoFrame { width: 100%; height: 400px; margin: 10px 0; }
+.timer { font-size: 24px; font-family: monospace; margin: 10px 0; }
+.status { padding: 10px; margin: 10px 0; }
+.success { background: #d4edda; }
+.error { background: #f8d7da; }
+</style>
+</head>
+<body>
+
+<h1>VideoSync</h1>
+
+<div id="mainScreen">
+    <h3>Создать комнату</h3>
+    <input type="text" id="hostName" placeholder="Ваше имя">
+    <button onclick="createRoom()">Создать комнату (стать хостом)</button>
+    
+    <h3>Присоединиться к комнате</h3>
+    <input type="text" id="roomIdInput" placeholder="ID комнаты">
+    <input type="text" id="guestName" placeholder="Ваше имя">
+    <button onclick="joinRoom()">Присоединиться</button>
+</div>
+
+<div id="roomScreen" class="hidden">
+    <div id="roomInfo">
+        <strong>Комната:</strong> <span id="roomName"></span><br>
+        <strong>ID:</strong> <span id="roomId"></span><br>
+        <strong>Ваша роль:</strong> <span id="userRole"></span>
+        <button onclick="copyLink()" style="width:auto; float:right;">📋 Копировать ссылку</button>
+    </div>
+    
+    <div id="hostControls" class="hidden">
+        <div class="timer">Таймер хоста: <span id="hostTimer">00:00:00</span></div>
+        <div>
+            <button onclick="startTimer()" id="startBtn">▶️ Старт таймера</button>
+            <button onclick="pauseTimer()" id="pauseBtn" class="hidden">⏸️ Пауза</button>
+            <button onclick="resetTimer()">🔄 Сбросить</button>
+        </div>
+        
+        <h4>Загрузить видео:</h4>
+        <input type="text" id="videoUrl" placeholder="Ссылка на VK/YouTube видео">
+        <button onclick="loadVideo()">📺 Загрузить видео</button>
+    </div>
+    
+    <div id="guestControls" class="hidden">
+        <button onclick="syncWithHost()" class="sync-btn">🔄 Синхронизировать с хостом</button>
+        <p>Таймер хоста: <span id="guestTimer">00:00:00</span></p>
+    </div>
+    
+    <iframe id="videoFrame" allowfullscreen></iframe>
+    
+    <button onclick="leaveRoom()" class="leave-btn">🚪 Выйти из комнаты</button>
+</div>
+
+<div id="status" class="status"></div>
+
+<script>
+// Конфигурация
+const API_URL = 'https://video.prohorverbovec.workers.dev';
+
+// Переменные
+let currentRoom = null;
+let isHost = false;
+let timer = 0;
+let timerInterval = null;
+let userId = 'user_' + Date.now();
+
+// Показать сообщение
+function showStatus(text, type) {
+    const el = document.getElementById('status');
+    el.textContent = text;
+    el.className = 'status ' + type;
+    setTimeout(() => el.textContent = '', 3000);
+}
+
+// Создать комнату
+async function createRoom() {
+    const name = document.getElementById('hostName').value.trim() || 'Хост';
+    
+    try {
+        const response = await fetch(API_URL + '/api/rooms', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({hostName: name, hostId: userId})
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            currentRoom = data.room;
+            isHost = true;
+            showRoom();
+            showStatus('Комната создана! ID: ' + currentRoom.id, 'success');
+        }
+    } catch (e) {
+        showStatus('Ошибка: ' + e.message, 'error');
+    }
+}
+
+// Присоединиться
+async function joinRoom() {
+    const roomId = document.getElementById('roomIdInput').value.trim().toUpperCase();
+    const name = document.getElementById('guestName').value.trim() || 'Гость';
+    
+    if (!roomId) return showStatus('Введите ID комнаты', 'error');
+    
+    try {
+        const response = await fetch(API_URL + '/api/room/' + roomId);
+        const data = await response.json();
+        
+        if (data.success && data.room) {
+            currentRoom = data.room;
+            isHost = false;
+            showRoom();
+            showStatus('Вы в комнате как ' + name, 'success');
+        } else {
+            showStatus('Комната не найдена', 'error');
+        }
+    } catch (e) {
+        showStatus('Ошибка подключения', 'error');
+    }
+}
+
+// Показать комнату
+function showRoom() {
+    document.getElementById('mainScreen').classList.add('hidden');
+    document.getElementById('roomScreen').classList.remove('hidden');
+    
+    document.getElementById('roomName').textContent = currentRoom.host_name;
+    document.getElementById('roomId').textContent = currentRoom.id;
+    
+    if (isHost) {
+        document.getElementById('userRole').textContent = '👑 ХОСТ';
+        document.getElementById('hostControls').classList.remove('hidden');
+        document.getElementById('guestControls').classList.add('hidden');
+        
+        // Восстанавливаем состояние
+        timer = currentRoom.host_timer || 0;
+        updateTimerDisplay('hostTimer');
+        
+        if (currentRoom.is_timer_running) {
+            startTimer();
+        }
+        
+        // Загружаем видео
+        if (currentRoom.video_url) {
+            loadVideoFromUrl(currentRoom.video_url);
+        }
+    } else {
+        document.getElementById('userRole').textContent = '👤 ЗРИТЕЛЬ';
+        document.getElementById('hostControls').classList.add('hidden');
+        document.getElementById('guestControls').classList.remove('hidden');
+        
+        updateGuestTimer();
+        
+        if (currentRoom.video_url) {
+            loadVideoFromUrl(currentRoom.video_url);
+        }
+    }
+}
+
+// Таймер хоста
+function startTimer() {
+    if (timerInterval) clearInterval(timerInterval);
+    
+    timerInterval = setInterval(async () => {
+        timer++;
+        updateTimerDisplay('hostTimer');
+        
+        // Сохраняем в D1
+        await fetch(API_URL + '/api/room/' + currentRoom.id + '/timer', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({timer: timer, isRunning: true})
+        });
+    }, 1000);
+    
+    document.getElementById('startBtn').classList.add('hidden');
+    document.getElementById('pauseBtn').classList.remove('hidden');
+}
+
+function pauseTimer() {
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+        
+        fetch(API_URL + '/api/room/' + currentRoom.id + '/timer', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({timer: timer, isRunning: false})
+        });
+        
+        document.getElementById('startBtn').classList.remove('hidden');
+        document.getElementById('pauseBtn').classList.add('hidden');
+    }
+}
+
+function resetTimer() {
+    pauseTimer();
+    timer = 0;
+    updateTimerDisplay('hostTimer');
+    
+    fetch(API_URL + '/api/room/' + currentRoom.id + '/timer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({timer: 0, isRunning: false})
+    });
+    
+    showStatus('Таймер сброшен', 'success');
+}
+
+function updateTimerDisplay(elementId) {
+    const h = Math.floor(timer / 3600);
+    const m = Math.floor((timer % 3600) / 60);
+    const s = timer % 60;
+    document.getElementById(elementId).textContent = 
+        h.toString().padStart(2, '0') + ':' + 
+        m.toString().padStart(2, '0') + ':' + 
+        s.toString().padStart(2, '0');
+}
+
+// Загрузить видео
+async function loadVideo() {
+    const url = document.getElementById('videoUrl').value.trim();
+    if (!url) return showStatus('Введите ссылку', 'error');
+    
+    // Сбрасываем таймер при смене видео
+    if (isHost) {
+        resetTimer();
+    }
+    
+    // Сохраняем в D1
+    await fetch(API_URL + '/api/room/' + currentRoom.id + '/video', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({videoUrl: url})
+    });
+    
+    loadVideoFromUrl(url);
+    showStatus('Видео загружено', 'success');
+}
+
+function loadVideoFromUrl(url) {
+    const frame = document.getElementById('videoFrame');
+    
+    if (url.includes('vk.com')) {
+        let params = url.includes('?') ? url.split('?')[1] : '';
+        frame.src = 'https://vk.com/video_ext.php?' + params;
+    } else if (url.includes('youtube.com') || url.includes('youtu.be')) {
+        let videoId = '';
+        if (url.includes('youtube.com/watch?v=')) {
+            videoId = url.split('v=')[1].split('&')[0];
+        } else if (url.includes('youtu.be/')) {
+            videoId = url.split('youtu.be/')[1].split('?')[0];
+        }
+        frame.src = 'https://www.youtube.com/embed/' + videoId;
+    } else {
+        frame.src = url;
+    }
+}
+
+// Синхронизация
+async function syncWithHost() {
+    try {
+        const response = await fetch(API_URL + '/api/room/' + currentRoom.id);
+        const data = await response.json();
+        
+        if (data.success) {
+            currentRoom = data.room;
+            updateGuestTimer();
+            showStatus('Синхронизировано! Таймер: ' + formatTime(currentRoom.host_timer), 'success');
+        }
+    } catch (e) {
+        showStatus('Ошибка синхронизации', 'error');
+    }
+}
+
+function updateGuestTimer() {
+    if (!currentRoom) return;
+    document.getElementById('guestTimer').textContent = formatTime(currentRoom.host_timer || 0);
+}
+
+function formatTime(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    return h.toString().padStart(2, '0') + ':' + 
+           m.toString().padStart(2, '0') + ':' + 
+           s.toString().padStart(2, '0');
+}
+
+// Утилиты
+function copyLink() {
+    if (!currentRoom) return;
+    const link = window.location.origin + window.location.pathname + '?room=' + currentRoom.id;
+    navigator.clipboard.writeText(link);
+    showStatus('Ссылка скопирована', 'success');
+}
+
+function leaveRoom() {
+    if (timerInterval) clearInterval(timerInterval);
+    
+    document.getElementById('mainScreen').classList.remove('hidden');
+    document.getElementById('roomScreen').classList.add('hidden');
+    document.getElementById('videoFrame').src = '';
+    
+    currentRoom = null;
+    isHost = false;
+}
+
+// Автообновление для гостей
+setInterval(async () => {
+    if (!isHost && currentRoom) {
+        try {
+            const response = await fetch(API_URL + '/api/room/' + currentRoom.id);
+            const data = await response.json();
+            if (data.success) {
+                currentRoom = data.room;
+                updateGuestTimer();
+            }
+        } catch (e) {}
+    }
+}, 2000);
+
+// Проверить URL
+window.onload = function() {
+    const params = new URLSearchParams(window.location.search);
+    const roomId = params.get('room');
+    if (roomId) {
+        document.getElementById('roomIdInput').value = roomId;
+        showStatus('Найдена ссылка на комнату. Введите имя и нажмите "Присоединиться"', 'success');
+    }
+};
+</script>
+
+</body>
+</html>
